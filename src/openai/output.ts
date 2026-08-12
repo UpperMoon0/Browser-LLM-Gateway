@@ -23,6 +23,67 @@ function stripFence(value: string): string {
   return match?.[1]?.trim() ?? trimmed;
 }
 
+function escapeWindowsPathContent(value: string): string {
+  let output = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== '\\') {
+      output += character;
+      continue;
+    }
+
+    if (value[index + 1] === '\\') {
+      output += '\\\\';
+      index += 1;
+    } else {
+      output += '\\\\';
+    }
+  }
+  return output;
+}
+
+function repairWindowsPathBackslashes(value: string): string {
+  let output = '';
+  let index = 0;
+
+  while (index < value.length) {
+    if (value[index] !== '"') {
+      output += value[index];
+      index += 1;
+      continue;
+    }
+
+    const start = index;
+    index += 1;
+    while (index < value.length) {
+      if (value[index] === '\\') {
+        index += 2;
+        continue;
+      }
+      if (value[index] === '"') break;
+      index += 1;
+    }
+
+    if (index >= value.length) return value;
+    const content = value.slice(start + 1, index);
+    const repaired = /^[A-Za-z]:\\/.test(content) ? escapeWindowsPathContent(content) : content;
+    output += `"${repaired}"`;
+    index += 1;
+  }
+
+  return output;
+}
+
+function parseControlledJson(candidate: string): Record<string, unknown> {
+  try {
+    return JSON.parse(candidate) as Record<string, unknown>;
+  } catch (originalError) {
+    const repaired = repairWindowsPathBackslashes(candidate);
+    if (repaired === candidate) throw originalError;
+    return JSON.parse(repaired) as Record<string, unknown>;
+  }
+}
+
 function asArgumentString(value: unknown): string {
   if (typeof value === 'string') {
     try {
@@ -41,7 +102,7 @@ export function parseControlledOutput(raw: string, toolsEnabled: boolean): Parse
   if (!toolsEnabled) return { kind: 'text', content: candidate };
 
   try {
-    const parsed = JSON.parse(candidate) as Record<string, unknown>;
+    const parsed = parseControlledJson(candidate);
     const kind = gatewayOutputKind(parsed);
 
     if (kind === 'text') {

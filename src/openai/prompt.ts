@@ -117,6 +117,7 @@ export function withGenerationContract(
       'Return exactly one JSON object and no markdown.',
       'For a normal answer use: {"__gateway_type":"text","content":"..."}',
       'For tool calls use: {"__gateway_type":"tool_calls","tool_calls":[{"name":"tool_name","arguments":{}}]}',
+      'Output must be valid JSON. Escape every backslash inside JSON strings; for example, a Windows path must look like "D:\\\\Workspaces\\\\project\\\\file.ts".',
       'Tool arguments must satisfy the supplied JSON Schema as closely as possible.',
     ].join('\n'));
   }

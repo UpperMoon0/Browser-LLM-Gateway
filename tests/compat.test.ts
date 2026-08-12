@@ -130,6 +130,22 @@ test('controlled output tolerates ChatGPT removing one marker underscore', () =>
   assert.equal(output.toolCalls[0]?.arguments, '{"filePath":"/README.md"}');
 });
 
+test('controlled parallel tool calls repair unescaped Windows paths', () => {
+  const raw = String.raw`{"_gateway_type":"tool_calls","tool_calls":[{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\README.md"}},{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\package.json"}},{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\src\server.ts"}},{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\src\api\openai.ts"}},{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\src\chatgpt\browser.ts"}},{"name":"read","arguments":{"filePath":"D:\Workspaces\Rust\Browser-LLM-Gateway\tests\compat.test.ts"}}]}`;
+  const output = parseControlledOutput(raw, true);
+
+  assert.equal(output.kind, 'tool_calls');
+  if (output.kind !== 'tool_calls') return;
+  assert.equal(output.toolCalls.length, 6);
+  assert.equal(new Set(output.toolCalls.map((call) => call.id)).size, 6);
+  assert.deepEqual(JSON.parse(output.toolCalls[0]?.arguments ?? '{}'), {
+    filePath: 'D:\\Workspaces\\Rust\\Browser-LLM-Gateway\\README.md',
+  });
+  assert.deepEqual(JSON.parse(output.toolCalls[5]?.arguments ?? '{}'), {
+    filePath: 'D:\\Workspaces\\Rust\\Browser-LLM-Gateway\\tests\\compat.test.ts',
+  });
+});
+
 test('JSON output strips a markdown JSON fence and validates it', () => {
   assert.equal(normalizeJsonText('```json\n{"ok":true}\n```'), '{"ok":true}');
   assert.throws(() => normalizeJsonText('not json'));
@@ -141,5 +157,6 @@ test('tool + JSON schema contract keeps the tool envelope as the top-level forma
     jsonSchema: { type: 'object', properties: { answer: { type: 'string' } } },
   });
   assert.match(prompt, /__gateway_type/);
+  assert.match(prompt, /Escape every backslash/);
   assert.match(prompt, /content string must itself contain valid JSON/);
 });
