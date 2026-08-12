@@ -11,7 +11,8 @@ import {
 } from './submission.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const RESPONSE_STABLE_MS = 3_000;
+const RESPONSE_STABLE_MS = 750;
+const FAST_CHAT_RESET_TIMEOUT_MS = 1_500;
 const LARGE_PROMPT_CHARACTERS = 8_000;
 
 export interface BrowserStatus {
@@ -20,6 +21,8 @@ export interface BrowserStatus {
   busy: boolean;
   phase?: string;
   promptCharacters?: number;
+  lastResetMode?: 'already_fresh' | 'client_router' | 'navigation_fallback';
+  lastResetMs?: number;
   url?: string;
   error?: string;
 }
@@ -31,6 +34,8 @@ export class ChatGPTBrowser {
   private busy = false;
   private phase?: string;
   private promptCharacters?: number;
+  private lastResetMode?: BrowserStatus['lastResetMode'];
+  private lastResetMs?: number;
   private lastError?: string;
 
   async start(): Promise<void> {
@@ -79,6 +84,8 @@ export class ChatGPTBrowser {
       busy: this.busy,
       phase: this.phase,
       promptCharacters: this.promptCharacters,
+      lastResetMode: this.lastResetMode,
+      lastResetMs: this.lastResetMs,
       url: this.page?.url(),
       error: ready ? undefined : this.lastError,
     };
@@ -110,6 +117,7 @@ export class ChatGPTBrowser {
 
       const snapshot = new StableSnapshot(RESPONSE_STABLE_MS);
       const deadline = Date.now() + config.browserTimeoutMs;
+      let sawGenerationControl = false;
 
       while (Date.now() < deadline) {
         if (signal?.aborted) {
@@ -121,9 +129,14 @@ export class ChatGPTBrowser {
         const content = lastMessage.locator(selectors.assistantContent).first();
         const current = await content.innerText().catch(() => '');
         const completed = snapshot.observe(current);
+        const generationActive = await page.locator(selectors.stopButton).first().isVisible().catch(() => false);
+        sawGenerationControl ||= generationActive;
 
-        if (completed !== undefined) {
-          yield completed;
+        // The stop control disappearing is ChatGPT's strongest UI-level completion
+        // signal. Stable text remains the fallback for very short responses where
+        // the control can appear and disappear between polling intervals.
+        if (current.trimEnd() && ((sawGenerationControl && !generationActive) || completed !== undefined)) {
+          yield current.trimEnd();
           this.lastError = undefined;
           return;
         }
@@ -160,7 +173,52 @@ export class ChatGPTBrowser {
   }
 
   private async openFreshChat(page: Page): Promise<void> {
-    await this.navigateToChatGPT(page);
+    const startedAt = Date.now();
+    const composer = page.locator(selectors.composer).first();
+    const assistant = page.locator(selectors.assistantMessage);
+
+    // Reuse ChatGPT's loaded application and ask its client-side router for a new
+    // conversation. This preserves the authenticated page while avoiding a full
+    // document navigation on every gateway request.
+    try {
+      const alreadyFresh = new URL(page.url()).pathname === '/'
+        && await assistant.count() === 0
+        && await composer.isVisible();
+      if (alreadyFresh) {
+        this.lastResetMode = 'already_fresh';
+        this.lastResetMs = Date.now() - startedAt;
+        return;
+      }
+
+      const newChat = page.locator(selectors.newChatButton).first();
+      await newChat.waitFor({ state: 'visible', timeout: FAST_CHAT_RESET_TIMEOUT_MS });
+      // The expanded sidebar can animate a duplicate icon over the link even
+      // though the link itself is ready. Force dispatches the same trusted click
+      // without waiting for that cosmetic overlay to stop intercepting pointers.
+      await newChat.click({ force: true, timeout: FAST_CHAT_RESET_TIMEOUT_MS });
+      await page.waitForFunction(
+        ({ composerSelector, assistantSelector }) => {
+          const editor = document.querySelector(composerSelector);
+          const visibleAssistant = [...document.querySelectorAll(assistantSelector)]
+            .some((element) => element.getClientRects().length > 0);
+          return window.location.pathname === '/'
+            && Boolean(editor)
+            && !visibleAssistant
+            && !(editor?.textContent ?? '').trim();
+        },
+        { composerSelector: selectors.composer, assistantSelector: selectors.assistantMessage },
+        { timeout: FAST_CHAT_RESET_TIMEOUT_MS },
+      );
+      this.lastResetMode = 'client_router';
+      this.lastResetMs = Date.now() - startedAt;
+      return;
+    } catch {
+      // UI selectors and client routing are not contractual. A full navigation is
+      // slower, but remains a safe isolation fallback when the fast reset changes.
+      await this.navigateToChatGPT(page);
+      this.lastResetMode = 'navigation_fallback';
+      this.lastResetMs = Date.now() - startedAt;
+    }
   }
 
   private async navigateToChatGPT(page: Page): Promise<void> {
