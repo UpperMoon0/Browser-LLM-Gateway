@@ -1,9 +1,11 @@
 // Keep all fragile ChatGPT UI selectors in one place.
-// These are intentionally easy to update when chatgpt.com changes.
+// Prefer stable data-testid/role attributes and keep fallbacks comma-separated.
 export const selectors = {
-  composer: '#prompt-textarea',
-  sendButton: 'button[data-testid="send-button"]',
+  composer: '#prompt-textarea, [data-testid="composer-input"]',
+  sendButton: 'button[data-testid="send-button"], button[aria-label*="Send" i]',
   stopButton: 'button[data-testid="stop-button"]',
   assistantMessage: '[data-message-author-role="assistant"]',
-  loginButtonText: /log in/i,
+  // This excludes status controls such as the transient "Thinking" label that
+  // can appear inside the outer assistant message container.
+  assistantContent: '.markdown, [class~="prose"]',
 } as const;

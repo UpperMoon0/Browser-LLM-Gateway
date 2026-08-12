@@ -2,27 +2,42 @@ import Fastify from 'fastify';
 import { registerOpenAIRoutes } from './api/openai.js';
 import { ChatGPTBrowser } from './chatgpt/browser.js';
 import { config } from './config.js';
+import { errorBody } from './openai/errors.js';
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
 const browser = new ChatGPTBrowser();
 
 app.addHook('onRequest', async (request, reply) => {
+  if (request.url === '/health' || request.url === '/v1/health') return;
   if (!config.gatewayApiKey) return;
 
   const authorization = request.headers.authorization;
   if (authorization !== `Bearer ${config.gatewayApiKey}`) {
-    return reply.code(401).send({
-      error: {
-        message: 'Invalid API key',
-        type: 'authentication_error',
-        code: 'invalid_api_key',
-      },
-    });
+    return reply.code(401).send(errorBody('Invalid API key', 'authentication_error', 'invalid_api_key'));
   }
 });
 
-app.get('/health', async () => ({ status: 'ok' }));
+app.get('/', async () => ({
+  name: 'Browser-LLM-Gateway',
+  openai_compatible: true,
+  endpoints: ['/v1/models', '/v1/chat/completions', '/v1/completions', '/v1/responses'],
+}));
+
+const health = async () => {
+  const status = await browser.status(false);
+  return {
+    status: status.ready ? 'ok' : 'degraded',
+    browser: status,
+  };
+};
+app.get('/health', health);
+app.get('/v1/health', health);
+
 await registerOpenAIRoutes(app, browser);
+
+app.setNotFoundHandler(async (request, reply) => reply.code(404).send(errorBody(
+  `Route '${request.method} ${request.url}' was not found`, 'invalid_request_error', 'not_found',
+)));
 
 const shutdown = async () => {
   await app.close();
@@ -33,8 +48,10 @@ process.on('SIGINT', () => void shutdown().finally(() => process.exit(0)));
 process.on('SIGTERM', () => void shutdown().finally(() => process.exit(0)));
 
 try {
-  await browser.start();
   await app.listen({ host: config.host, port: config.port });
+  // Warm the browser after the HTTP server is listening. Authentication problems are
+  // reflected through /health and generation errors rather than crashing the gateway.
+  void browser.start().catch((error) => app.log.warn({ error }, 'ChatGPT browser is not ready; run npm run auth'));
 } catch (error) {
   app.log.error(error);
   await shutdown();

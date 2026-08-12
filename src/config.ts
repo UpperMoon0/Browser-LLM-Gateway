@@ -11,6 +11,10 @@ function int(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function csv(value: string | undefined): string[] {
+  return (value ?? '').split(',').map((part) => part.trim()).filter(Boolean);
+}
+
 export const config = {
   host: process.env.HOST ?? '127.0.0.1',
   port: int(process.env.PORT, 11436),
@@ -18,4 +22,19 @@ export const config = {
   chatgptBaseUrl: process.env.CHATGPT_BASE_URL ?? 'https://chatgpt.com',
   profileDir: resolve(process.env.CHATGPT_PROFILE_DIR ?? '.data/chatgpt-profile'),
   gatewayApiKey: process.env.GATEWAY_API_KEY?.trim() || undefined,
+  modelId: process.env.MODEL_ID?.trim() || 'chatgpt-web',
+  modelAliases: csv(process.env.MODEL_ALIASES),
+  strictModelNames: bool(process.env.STRICT_MODEL_NAMES, false),
+  navigationTimeoutMs: int(process.env.CHATGPT_NAVIGATION_TIMEOUT_MS, 30_000),
+  composerTimeoutMs: int(process.env.COMPOSER_TIMEOUT_MS, 10_000),
+  browserTimeoutMs: int(process.env.BROWSER_TIMEOUT_MS, 10 * 60_000),
 };
+
+export function advertisedModels(): string[] {
+  return [...new Set([config.modelId, ...config.modelAliases])];
+}
+
+export function acceptsModel(model: string): boolean {
+  if (!config.strictModelNames) return Boolean(model);
+  return advertisedModels().includes(model);
+}

@@ -5,4 +5,6 @@ dist/
 !.data/.gitkeep
 playwright-report/
 test-results/
+cookies.txt
+debug.log
 .DS_Store
