@@ -12,9 +12,17 @@ export interface ParsedToolCall {
 
 function gatewayOutputKind(value: Record<string, unknown>): unknown {
   // The web model occasionally normalizes the private marker by removing one
-  // leading underscore. Accept that observed variant, but never expose either
-  // control envelope to OpenAI-compatible clients.
-  return value.__gateway_type ?? value._gateway_type;
+  // leading underscore or applying Markdown emphasis. Accept those observed
+  // variants, but never expose a control envelope to compatible clients.
+  const direct = value.__gateway_type ?? value._gateway_type;
+  if (direct !== undefined) return direct;
+
+  for (const [key, entry] of Object.entries(value)) {
+    const normalized = key.replaceAll('*', '');
+    if (normalized === '__gateway_type' || normalized === '_gateway_type') return entry;
+  }
+
+  return undefined;
 }
 
 function stripFence(value: string): string {
@@ -66,11 +74,28 @@ function repairWindowsPathBackslashes(value: string): string {
 
     if (index >= value.length) return value;
     const content = value.slice(start + 1, index);
-    const repaired = /^[A-Za-z]:\\/.test(content) ? escapeWindowsPathContent(content) : content;
+    const repaired = /^[A-Za-z]:\\/.test(content)
+      ? escapeWindowsPathContent(content)
+      : removeInvalidJsonEscapes(content);
     output += `"${repaired}"`;
     index += 1;
   }
 
+  return output;
+}
+
+function removeInvalidJsonEscapes(value: string): string {
+  let output = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== '\\' || index + 1 >= value.length) {
+      output += character;
+      continue;
+    }
+
+    const escaped = value[index + 1] ?? '';
+    if ('"\\/bfnrtu'.includes(escaped)) output += '\\';
+  }
   return output;
 }
 

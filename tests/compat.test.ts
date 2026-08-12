@@ -161,6 +161,15 @@ test('controlled tool call ignores junk appended after the JSON envelope', () =>
   });
 });
 
+test('controlled text tolerates Markdown-corrupted marker and JSON escapes', () => {
+  const raw = String.raw`{"_*gateway\_type":"text","content":"Calls input\_items and returns text."}**`;
+
+  assert.deepEqual(parseControlledOutput(raw, true), {
+    kind: 'text',
+    content: 'Calls input_items and returns text.',
+  });
+});
+
 test('JSON output strips a markdown JSON fence and validates it', () => {
   assert.equal(normalizeJsonText('```json\n{"ok":true}\n```'), '{"ok":true}');
   assert.throws(() => normalizeJsonText('not json'));
@@ -173,5 +182,6 @@ test('tool + JSON schema contract keeps the tool envelope as the top-level forma
   });
   assert.match(prompt, /__gateway_type/);
   assert.match(prompt, /Escape every backslash/);
+  assert.match(prompt, /Do not add Markdown emphasis/);
   assert.match(prompt, /content string must itself contain valid JSON/);
 });
