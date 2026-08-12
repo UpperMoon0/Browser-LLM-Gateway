@@ -74,14 +74,64 @@ function repairWindowsPathBackslashes(value: string): string {
   return output;
 }
 
-function parseControlledJson(candidate: string): Record<string, unknown> {
-  try {
-    return JSON.parse(candidate) as Record<string, unknown>;
-  } catch (originalError) {
-    const repaired = repairWindowsPathBackslashes(candidate);
-    if (repaired === candidate) throw originalError;
-    return JSON.parse(repaired) as Record<string, unknown>;
+function firstCompleteJsonObject(value: string): string | undefined {
+  const start = value.indexOf('{');
+  if (start < 0) return undefined;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
   }
+
+  return undefined;
+}
+
+function parseControlledJson(candidate: string): Record<string, unknown> {
+  const extracted = firstCompleteJsonObject(candidate);
+  const candidates = extracted && extracted !== candidate ? [candidate, extracted] : [candidate];
+  let originalError: unknown;
+
+  for (const value of candidates) {
+    try {
+      return JSON.parse(value) as Record<string, unknown>;
+    } catch (error) {
+      originalError ??= error;
+    }
+
+    const repaired = repairWindowsPathBackslashes(value);
+    if (repaired !== value) {
+      try {
+        return JSON.parse(repaired) as Record<string, unknown>;
+      } catch {
+        // Try the next narrowly extracted candidate, if present.
+      }
+    }
+  }
+
+  throw originalError;
 }
 
 function asArgumentString(value: unknown): string {

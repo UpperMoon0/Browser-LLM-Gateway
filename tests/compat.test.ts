@@ -146,6 +146,21 @@ test('controlled parallel tool calls repair unescaped Windows paths', () => {
   });
 });
 
+test('controlled tool call ignores junk appended after the JSON envelope', () => {
+  const raw = '{"__gateway_type":"tool_calls","tool_calls":[{"name":"task","arguments":{"description":"Inspect repository structure","prompt":"Explore the repository.","subagent_type":"explore"}}]}]()';
+  const output = parseControlledOutput(raw, true);
+
+  assert.equal(output.kind, 'tool_calls');
+  if (output.kind !== 'tool_calls') return;
+  assert.equal(output.toolCalls.length, 1);
+  assert.equal(output.toolCalls[0]?.name, 'task');
+  assert.deepEqual(JSON.parse(output.toolCalls[0]?.arguments ?? '{}'), {
+    description: 'Inspect repository structure',
+    prompt: 'Explore the repository.',
+    subagent_type: 'explore',
+  });
+});
+
 test('JSON output strips a markdown JSON fence and validates it', () => {
   assert.equal(normalizeJsonText('```json\n{"ok":true}\n```'), '{"ok":true}');
   assert.throws(() => normalizeJsonText('not json'));
