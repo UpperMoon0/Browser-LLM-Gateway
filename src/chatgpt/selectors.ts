@@ -4,6 +4,9 @@ export const selectors = {
   composer: '#prompt-textarea, [data-testid="composer-input"]',
   newChatButton: '[data-testid="create-new-chat-button"]:visible, a[aria-label*="New chat" i]:visible',
   sendButton: 'button[data-testid="send-button"], button[aria-label*="Send" i]',
+  imageInput: 'input[data-testid="upload-photos-input"], input#upload-photos',
+  uploadedImage: 'form img[src*="/backend-api/estuary/content"]',
+  removeFileButton: 'form button[aria-label^="Remove file" i]',
   stopButton: 'button[data-testid="stop-button"]',
   assistantMessage: '[data-message-author-role="assistant"]',
   // This excludes status controls such as the transient "Thinking" label that

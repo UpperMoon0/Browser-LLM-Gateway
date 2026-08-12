@@ -175,3 +175,112 @@ Live checks also confirmed:
 5. Diagnose headed versus headless profile behavior without changing the working headed default.
 6. Explore a same-origin browser `fetch` transport behind an experimental flag, with automatic UI fallback and protocol-change detection.
 7. Consider a pool of isolated pages or profiles only after concurrency, account limits, and cross-request isolation are tested carefully.
+
+## 2026-08-12: Cookie-file authentication bootstrap
+
+### Problem
+
+The headed Playwright Chromium session could not complete Google OAuth. After a later navigation fallback, ChatGPT redirected the page into a rejected Google sign-in flow. Chromium then exited while the Node gateway retained stale context references, producing a misleading health state with `started: true` and `ready: false`.
+
+The exported `cookies.txt` already contained the split ChatGPT session-token cookies and a valid clearance cookie, but the running gateway did not use that file. The repository's old `inject-cookies.js` was an unintegrated one-off script.
+
+### Implementation
+
+- Added a Netscape cookie-file parser that preserves host-only, subdomain, secure, session, expiry, and `#HttpOnly_` semantics.
+- Expired cookies are skipped and cookie values are never logged.
+- `CHATGPT_COOKIE_FILE` defaults to the Git-ignored `cookies.txt` file.
+- Whenever Chromium starts, the gateway imports usable cookies before navigating to ChatGPT.
+- A changed cookie file is detected and re-imported under the browser mutex before the next generation request, allowing credential rotation without restarting the server.
+- `POST /v1/auth/cookies` accepts a Netscape file as `text/plain` or JSON, validates it in an isolated browser context, persists it only after authentication succeeds, and immediately applies it to the live browser under the mutex.
+- The dedicated browser context clears stale cookies before applying the exported file.
+- `npm run auth` now prefers the cookie file and verifies that the ChatGPT composer becomes visible, while retaining interactive sign-in as a fallback when no file exists.
+- Browser startup now disposes stale context references and relaunches after a browser disconnect.
+- Health status exposes `authSource` and `importedCookies` without exposing cookie names or values.
+- Health status also exposes `cookieReloads` so runtime rotations can be confirmed.
+
+### Result
+
+The running development gateway restarted automatically, imported 17 unexpired cookies, reached `https://chatgpt.com/`, and reported:
+
+```json
+{
+  "status": "ok",
+  "browser": {
+    "started": true,
+    "ready": true,
+    "busy": false,
+    "authSource": "cookie_file",
+    "importedCookies": 17,
+    "url": "https://chatgpt.com/"
+  }
+}
+```
+
+Initial completion requests using the older export reached ChatGPT but did not follow their exact-output instructions. An independent `/api/auth/session` probe then showed that bundled headless Chromium received HTTP 403. Switching Playwright to the installed headed Chrome channel made the same probe return HTTP 200 and an authenticated user, demonstrating that the cookie export needed a matching browser family.
+
+A fresh cookie file was subsequently rotated through `POST /v1/auth/cookies`. The endpoint accepted 20 cookies with zero expired or malformed entries, validated the session, and applied it without restarting the server. A live `What is 2 + 2? Reply with only the number.` request then returned `4` in 10.376 seconds, and health remained `ok` with `ready: true` and `authSource: cookie_file`.
+
+Validation after this change passed TypeScript typechecking, 19 unit tests, the production build, and `git diff --check`.
+
+## 2026-08-12: Kilo image-input compatibility
+
+### Kilo source findings
+
+Kilo's webview accepts PNG, JPEG, GIF, and WebP from paste and drag/drop. `FileReader.readAsDataURL()` turns each browser `File` into a base64 data URL. On send, the webview maps the attachment to `{ type: "file", mime, url, filename }`; the extension forwards that part to the Kilo session API unchanged.
+
+The opencode session layer normalizes image size/encoding before persistence. When building the next model request, persisted non-text file parts become AI SDK file parts with the original data URL and MIME type. The OpenAI-compatible adapter consequently emits the standard Chat Completions image shape (`image_url.url`).
+
+Image memory is request reconstruction, not implicit provider memory. Kilo persists file parts and replays relevant message history. Once a completed compaction summary exists, media before the newest real user turn is stripped to a text placeholder such as `[Attached image/png: screenshot.png]`; current-turn media remains intact. At that point the model retains only summarized/textual knowledge of an old image unless the user attaches it again.
+
+### Gateway implementation
+
+- Parse Chat Completions `image_url` and Responses `input_image` content parts.
+- Accept Kilo-compatible base64 data URLs for PNG, JPEG, GIF, and WebP.
+- Validate base64, MIME type, a 20 MB decoded per-image limit, and a 20-image request limit.
+- Upload decoded bytes through ChatGPT's hidden `upload-photos-input`.
+- Wait until every attachment has a ChatGPT Estuary preview URL before sending the prompt.
+- Preserve an image marker at its position in the serialized role transcript.
+- Re-upload every image supplied in Chat Completions history, allowing Kilo's persisted context to work while each HTTP request still uses a fresh ChatGPT conversation.
+- Retain image bytes in the process-local Responses store so `previous_response_id` continuations can re-upload them.
+- Increase the HTTP body limit from 10 MB to 32 MB to accommodate base64 overhead.
+- Reject remote image URLs explicitly. Fetching arbitrary client URLs would introduce a server-side request-forgery surface and is unnecessary for Kilo's data-URL path.
+
+### Completion-detection issue found
+
+The first live vision test returned the transient UI text `Analyzing image` after 4.294 seconds. ChatGPT exposes that string inside an assistant message before the generation control reliably appears, so the existing 750 ms stable-text fallback treated it as final output.
+
+Media requests now ignore the exact `Analyzing image(s)` status and use a 3-second stability fallback. Text-only requests retain the optimized 750 ms fallback and therefore do not pay this additional guard time.
+
+### Live results
+
+Using a generated 240x120 crimson PNG through `POST /v1/chat/completions`:
+
+| Test | Result | End-to-end time |
+| --- | --- | ---: |
+| Initial implementation | Incorrect transient `Analyzing image` | 4.294 s |
+| Vision request after completion fix | Correct `red` | 17.318 s |
+| Three-message history; image only in the earlier user message | Correct recall: `red` | 18.147 s |
+| Responses image followed by `previous_response_id` continuation | Correct `Blue` then `Blue` | Two requests completed within 30.2 s total |
+
+Both continuation tests opened a fresh ChatGPT chat and re-uploaded the earlier image: once from client-supplied Chat Completions history and once from the gateway's process-local Responses store. Health remained `ok` afterward.
+
+### Validation
+
+- `npm run typecheck`
+- `npm run test:unit` (22 tests)
+- `npm run build`
+- Live image recognition and multi-turn history replay
+
+### Complex five-turn visual-memory probe
+
+A reproducible probe was added as `npm run test:image-memory`. Its control image contains exactly three cats (orange tabby, black, white), two dogs (golden/tan retriever and black-and-white dog), and one blue tractor. The image appears only in the first user message; each later Chat Completions request sends the growing conversation history, matching Kilo's pre-compaction behavior. Since the gateway isolates requests with a fresh ChatGPT chat, it reuploads the retained first-message image on every turn.
+
+| Turn | Question focus | Result | Time |
+| --- | --- | --- | ---: |
+| 1 | Full inventory | Correct counts, colors, and tractor | 37.317 s |
+| 2 | Tractor color and position | Correct: blue, behind/slightly left | 40.746 s |
+| 3 | Cat colors left-to-right | Correct: orange tabby, black, white | 20.024 s |
+| 4 | Dog appearances left-to-right | Correct: golden/tan, black-and-white | 21.563 s |
+| 5 | Exact final recall | Correct: `cats=3; dogs=2; tractors=1; tractor_color=blue` | 33.101 s |
+
+All five turns were correct. Mean end-to-end time was 30.550 seconds and median time was 33.101 seconds. This verifies context reconstruction and media replay, not persistent visual memory inside one hidden ChatGPT Web conversation. After Kilo compacts away the original image bytes, later requests retain only its textual summary/placeholder unless the image is attached again.

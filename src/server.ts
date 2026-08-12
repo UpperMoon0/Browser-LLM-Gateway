@@ -4,7 +4,7 @@ import { ChatGPTBrowser } from './chatgpt/browser.js';
 import { config } from './config.js';
 import { errorBody } from './openai/errors.js';
 
-const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
+const app = Fastify({ logger: true, bodyLimit: 32 * 1024 * 1024 });
 const browser = new ChatGPTBrowser();
 
 app.addHook('onRequest', async (request, reply) => {
@@ -32,6 +32,36 @@ const health = async () => {
 };
 app.get('/health', health);
 app.get('/v1/health', health);
+
+app.post('/v1/auth/cookies', async (request, reply) => {
+  const body = request.body;
+  const cookieText = typeof body === 'string'
+    ? body
+    : body && typeof body === 'object' && 'cookies' in body
+      ? (body as { cookies?: unknown }).cookies
+      : undefined;
+
+  if (typeof cookieText !== 'string' || !cookieText.trim()) {
+    return reply.code(400).send(errorBody(
+      'Send the Netscape cookie file as text/plain or as a JSON object with a non-empty cookies string.',
+      'invalid_request_error',
+      'invalid_cookie_file',
+      'cookies',
+    ));
+  }
+
+  try {
+    const result = await browser.replaceCookies(cookieText);
+    return reply.send({ object: 'chatgpt.cookie_reload', status: 'ok', ...result });
+  } catch (error) {
+    return reply.code(400).send(errorBody(
+      error instanceof Error ? error.message : 'Cookie replacement failed',
+      'invalid_request_error',
+      'cookie_authentication_failed',
+      'cookies',
+    ));
+  }
+});
 
 await registerOpenAIRoutes(app, browser);
 

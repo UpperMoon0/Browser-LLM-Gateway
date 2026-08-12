@@ -42,6 +42,18 @@ Supported/adapted:
 
 Tool/function calls are **emulated**. The gateway gives the ChatGPT webpage a strict internal JSON output contract, then translates that result into OpenAI `tool_calls`/`function_call` objects. This is not the ChatGPT website exposing a native OpenAI function-calling protocol.
 
+### Image input compatibility
+
+Chat Completions `image_url` parts and Responses `input_image` parts are supported when their URL is a base64 `data:` URL. PNG, JPEG, GIF, and WebP are accepted. This is the format Kilo uses for images pasted or dropped into its prompt composer.
+
+The gateway decodes each image, uploads it through ChatGPT's web composer, waits for the ChatGPT-hosted attachment preview, and then submits the serialized conversation. The text transcript includes a marker at the original content-part position so the model can associate the uploaded media with the surrounding message.
+
+Kilo persists image file parts in its session and includes the relevant history in later OpenAI-compatible requests. Because this gateway starts a fresh ChatGPT conversation for every HTTP request, those retained images are uploaded again on the later request. This preserves request isolation: image recall comes from client-supplied context, not from keeping a hidden ChatGPT conversation alive.
+
+For the Responses API, images are also retained in the gateway's in-memory `previous_response_id` context and re-uploaded on continuation. This state is process-local and is lost when the gateway restarts.
+
+Remote HTTP(S) image URLs and `file_id` references are rejected rather than fetched by the gateway. Convert them to base64 data URLs before sending. A request may contain at most 20 images, each no larger than 20 MB decoded.
+
 ### Responses API compatibility
 
 Supported/adapted:
@@ -72,7 +84,7 @@ The following OpenAI product APIs cannot be implemented faithfully by merely typ
 - vector stores
 - Assistants/Threads APIs
 - realtime/WebSocket APIs
-- image/audio message parts
+- audio message parts
 - log probabilities
 - background Responses
 
@@ -122,13 +134,41 @@ Node does not automatically load `.env` in this project. Either export the varia
 
 ## Authenticate ChatGPT
 
+If Google sign-in is rejected in Playwright Chromium, export the authenticated
+`chatgpt.com` cookies from your normal browser in Netscape cookie-file format and
+save them as `cookies.txt` in the repository root. The file is ignored by Git and
+must be treated as a credential. The gateway imports unexpired cookies into its
+persistent profile automatically whenever Chromium starts. You can replace the
+file while the gateway is running; it fingerprints the file and imports a changed
+version under the serialized browser lock before the next generation request.
+
 ```bash
 npm run auth
 ```
 
-A persistent Chromium window opens. Sign in normally. When the normal ChatGPT composer is visible, return to the terminal and press Enter.
+When `cookies.txt` exists, this command imports it and verifies that the normal
+ChatGPT composer is visible. Without a cookie file, it falls back to interactive
+sign-in: sign in normally, then return to the terminal and press Enter.
 
-Authentication is stored under `.data/chatgpt-profile` by default. **Treat this directory as a credential.** It is ignored by Git.
+Authentication is stored under `.data/chatgpt-profile` by default. **Treat both
+the profile directory and `cookies.txt` as credentials.** They are ignored by Git.
+
+### Rotate cookies while running
+
+Replace the active cookies without restarting the gateway by sending a Netscape
+cookie file to `POST /v1/auth/cookies`. The gateway validates the replacement in
+an isolated browser context before persisting or applying it. The endpoint uses
+the same `GATEWAY_API_KEY` protection as generation routes.
+
+```bash
+curl http://127.0.0.1:11436/v1/auth/cookies \
+  -H 'Authorization: Bearer local' \
+  -H 'Content-Type: text/plain' \
+  --data-binary @cookies.txt
+```
+
+JSON is also accepted as `{ "cookies": "<Netscape cookie file contents>" }`.
+Responses contain only import counts; cookie names and values are never returned.
 
 ## Run
 
@@ -229,8 +269,10 @@ If ChatGPT chooses the tool, the gateway translates its internal control JSON in
 | `HOST` | `127.0.0.1` | HTTP bind host. |
 | `PORT` | `11436` | HTTP port. |
 | `HEADLESS` | `false` | Run persistent Chromium headless after authentication. |
+| `CHATGPT_BROWSER_CHANNEL` | `chrome` | Playwright browser channel. Use the browser family that exported `cookies.txt`. |
 | `CHATGPT_BASE_URL` | `https://chatgpt.com` | ChatGPT web root. |
 | `CHATGPT_PROFILE_DIR` | `.data/chatgpt-profile` | Persistent browser state. |
+| `CHATGPT_COOKIE_FILE` | `cookies.txt` | Optional Netscape-format cookie file imported whenever Chromium starts. |
 | `GATEWAY_API_KEY` | empty | If set, require `Authorization: Bearer ...`. |
 | `MODEL_ID` | `chatgpt-web` | Main advertised model ID. |
 | `MODEL_ALIASES` | empty | Comma-separated additional advertised model names. |

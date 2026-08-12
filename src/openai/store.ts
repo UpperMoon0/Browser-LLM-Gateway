@@ -1,8 +1,11 @@
+import type { ImageInput } from './images.js';
+
 export interface StoredResponse {
   id: string;
   response: Record<string, unknown>;
   inputItems: unknown[];
   contextText: string;
+  contextImages: ImageInput[];
   createdAt: number;
 }
 

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeJsonText, parseControlledOutput } from '../src/openai/output.ts';
 import { StopFilter } from '../src/openai/stop.ts';
-import { withGenerationContract } from '../src/openai/prompt.ts';
+import { chatImages, responseImages, serializeMessages, withGenerationContract } from '../src/openai/prompt.ts';
 import { StableSnapshot } from '../src/chatgpt/snapshot.ts';
+import { parseNetscapeCookies } from '../src/chatgpt/cookies.ts';
 import {
   composerTextMatches,
   describeComposerMismatch,
@@ -146,6 +147,46 @@ test('controlled parallel tool calls repair unescaped Windows paths', () => {
   });
 });
 
+test('Netscape cookies preserve host-only and HttpOnly semantics', () => {
+  const parsed = parseNetscapeCookies([
+    '# Netscape HTTP Cookie File',
+    'chatgpt.com\tFALSE\t/\tTRUE\t0\t__Host-session\thost-value',
+    '#HttpOnly_.chatgpt.com\tTRUE\t/\tTRUE\t2000000000\t__Secure-session\tdomain-value',
+  ].join('\n'), 1_900_000_000);
+
+  assert.deepEqual(parsed, {
+    cookies: [
+      {
+        name: '__Host-session', value: 'host-value', secure: true, httpOnly: false,
+        url: 'https://chatgpt.com/',
+      },
+      {
+        name: '__Secure-session', value: 'domain-value', secure: true, httpOnly: true,
+        expires: 2_000_000_000, domain: '.chatgpt.com', path: '/',
+      },
+    ],
+    expired: 0,
+    invalid: 0,
+  });
+});
+
+test('Netscape cookie parser drops expired and malformed entries', () => {
+  const parsed = parseNetscapeCookies([
+    'chatgpt.com\tFALSE\t/\tTRUE\t100\told\tvalue',
+    'chatgpt.com\tFALSE\t/\tFALSE\t0\tempty\t',
+    'not-enough-fields',
+  ].join('\n'), 101);
+
+  assert.deepEqual(parsed, {
+    cookies: [{
+      name: 'empty', value: '', secure: false, httpOnly: false,
+      url: 'https://chatgpt.com/',
+    }],
+    expired: 1,
+    invalid: 1,
+  });
+});
+
 test('controlled tool call ignores junk appended after the JSON envelope', () => {
   const raw = '{"__gateway_type":"tool_calls","tool_calls":[{"name":"task","arguments":{"description":"Inspect repository structure","prompt":"Explore the repository.","subagent_type":"explore"}}]}]()';
   const output = parseControlledOutput(raw, true);
@@ -184,4 +225,42 @@ test('tool + JSON schema contract keeps the tool envelope as the top-level forma
   assert.match(prompt, /Escape every backslash/);
   assert.match(prompt, /Do not add Markdown emphasis/);
   assert.match(prompt, /content string must itself contain valid JSON/);
+});
+
+test('chat image_url data parts become browser uploads and transcript markers', () => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+  const messages = [{
+    role: 'user' as const,
+    content: [
+      { type: 'text' as const, text: 'Inspect this' },
+      { type: 'image_url' as const, image_url: { url: dataUrl }, filename: 'screen.png' },
+    ],
+  }];
+
+  const images = chatImages(messages);
+  assert.equal(images.length, 1);
+  assert.equal(images[0]?.filename, 'screen.png');
+  assert.equal(images[0]?.mimeType, 'image/png');
+  assert.match(serializeMessages(messages), /Inspect this\n\[Image attached separately\]/);
+});
+
+test('Responses input_image parts are retained for previous_response_id replay', () => {
+  const images = responseImages([{
+    role: 'user',
+    content: [{ type: 'input_image', image_url: 'data:image/jpeg;base64,/9j/2Q==' }],
+  }]);
+
+  assert.equal(images.length, 1);
+  assert.equal(images[0]?.filename, 'image-01.jpg');
+  assert.equal(images[0]?.mimeType, 'image/jpeg');
+});
+
+test('remote image URLs fail explicitly instead of silently losing vision context', () => {
+  assert.throws(
+    () => chatImages([{
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }],
+    }]),
+    /Only base64 data URL image inputs/,
+  );
 });

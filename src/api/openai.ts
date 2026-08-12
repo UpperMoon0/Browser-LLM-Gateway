@@ -5,15 +5,18 @@ import { acceptsModel, advertisedModels, config } from '../config.js';
 import { errorBody, sendKnownError } from '../openai/errors.js';
 import { normalizeJsonText, parseControlledOutput, type ParsedAssistantOutput } from '../openai/output.js';
 import {
+  chatImages,
   effectiveChatToolChoice,
   normalizeChatTools,
   responseFormat,
+  responseImages,
   responseTools,
   serializeMessages,
   serializeResponsesInput,
   UnsupportedInputError,
   withGenerationContract,
 } from '../openai/prompt.js';
+import type { ImageInput } from '../openai/images.js';
 import { ResponseStore } from '../openai/store.js';
 import { StopFilter } from '../openai/stop.js';
 import {
@@ -87,9 +90,9 @@ function bindStreamingAbort(request: FastifyRequest, reply: FastifyReply, contro
   });
 }
 
-async function collect(browser: ChatGPTBrowser, prompt: string, signal?: AbortSignal): Promise<string> {
+async function collect(browser: ChatGPTBrowser, prompt: string, signal?: AbortSignal, images: ImageInput[] = []): Promise<string> {
   let output = '';
-  for await (const delta of browser.generate(prompt, signal)) output += delta;
+  for await (const delta of browser.generate(prompt, signal, images)) output += delta;
   return output;
 }
 
@@ -126,6 +129,7 @@ function requiredToolName(choice: ChatCompletionRequest['tool_choice'] | Respons
 
 function prepareChat(request: ChatCompletionRequest): {
   prompt: string;
+  images: ImageInput[];
   toolsEnabled: boolean;
   structured: boolean;
 } {
@@ -144,7 +148,7 @@ function prepareChat(request: ChatCompletionRequest): {
     parallelToolCalls: request.parallel_tool_calls,
     ...format,
   });
-  return { prompt, toolsEnabled, structured };
+  return { prompt, images: chatImages(request.messages), toolsEnabled, structured };
 }
 
 function finalizeControlledOutput(
@@ -230,7 +234,7 @@ async function handleChatCompletion(
 
     if (body.stream) return streamChatCompletion(request, reply, browser, body, prepared);
 
-    const raw = await collect(browser, prepared.prompt, requestAbortSignal(request, reply));
+    const raw = await collect(browser, prepared.prompt, requestAbortSignal(request, reply), prepared.images);
     const output = finalizeControlledOutput(raw, prepared.toolsEnabled, prepared.structured, body);
     if (output.kind === 'text') output.content = applyStop(output.content, body.stop);
 
@@ -265,7 +269,7 @@ async function streamChatCompletion(
   reply: FastifyReply,
   browser: ChatGPTBrowser,
   body: ChatCompletionRequest,
-  prepared: { prompt: string; toolsEnabled: boolean; structured: boolean },
+  prepared: { prompt: string; images: ImageInput[]; toolsEnabled: boolean; structured: boolean },
 ): Promise<void> {
   const id = `chatcmpl-${randomUUID()}`;
   const created = now();
@@ -298,7 +302,7 @@ async function streamChatCompletion(
     // Tool calls and structured JSON are buffered because the control envelope must
     // be parsed/validated before exposing OpenAI-shaped deltas.
     if (prepared.toolsEnabled || prepared.structured) {
-      const raw = await collect(browser, prepared.prompt, abort.signal);
+      const raw = await collect(browser, prepared.prompt, abort.signal, prepared.images);
       const output = finalizeControlledOutput(raw, prepared.toolsEnabled, prepared.structured, body);
 
       if (output.kind === 'tool_calls') {
@@ -331,7 +335,7 @@ async function streamChatCompletion(
       }
     } else {
       const filter = new StopFilter(body.stop);
-      for await (const delta of browser.generate(prepared.prompt, abort.signal)) {
+      for await (const delta of browser.generate(prepared.prompt, abort.signal, prepared.images)) {
         const filtered = filter.push(delta);
         if (filtered.text) {
           finalText += filtered.text;
@@ -474,6 +478,7 @@ function normalizedResponseInputItems(body: ResponseRequest): unknown[] {
 function prepareResponse(body: ResponseRequest): {
   prompt: string;
   contextText: string;
+  images: ImageInput[];
   toolsEnabled: boolean;
   structured: boolean;
 } {
@@ -481,10 +486,12 @@ function prepareResponse(body: ResponseRequest): {
   if (body.background) throw new UnsupportedInputError('background Responses are not supported');
 
   let priorContext = '';
+  let priorImages: ImageInput[] = [];
   if (body.previous_response_id) {
     const previous = store.get(body.previous_response_id);
     if (!previous) throw new UnsupportedInputError(`previous_response_id '${body.previous_response_id}' was not found in this gateway process`);
     priorContext = previous.contextText;
+    priorImages = previous.contextImages;
   }
 
   const input = serializeResponsesInput(body.input);
@@ -509,7 +516,13 @@ function prepareResponse(body: ResponseRequest): {
     parallelToolCalls: body.parallel_tool_calls,
     ...format,
   });
-  return { prompt, contextText: [priorContext, input].filter(Boolean).join('\n\n'), toolsEnabled, structured };
+  return {
+    prompt,
+    contextText: [priorContext, input].filter(Boolean).join('\n\n'),
+    images: [...priorImages, ...responseImages(body.input)],
+    toolsEnabled,
+    structured,
+  };
 }
 
 function responseOutputItems(output: ParsedAssistantOutput): { items: Record<string, unknown>[]; outputText: string } {
@@ -597,7 +610,7 @@ async function handleResponse(request: FastifyRequest, reply: FastifyReply, brow
     const prepared = prepareResponse(body);
     if (body.stream) return streamResponse(request, reply, browser, body, prepared);
 
-    const raw = await collect(browser, prepared.prompt, requestAbortSignal(request, reply));
+    const raw = await collect(browser, prepared.prompt, requestAbortSignal(request, reply), prepared.images);
     const output = finalizeControlledOutput(raw, prepared.toolsEnabled, prepared.structured, body);
     const id = `resp_${randomUUID().replaceAll('-', '')}`;
     const response = responseObject(id, body, output, prepared.prompt);
@@ -608,6 +621,7 @@ async function handleResponse(request: FastifyRequest, reply: FastifyReply, brow
         response,
         inputItems: normalizedResponseInputItems(body),
         contextText: appendAssistantContext(prepared.contextText, output),
+        contextImages: prepared.images,
         createdAt: now(),
       });
     }
@@ -630,7 +644,7 @@ async function streamResponse(
   reply: FastifyReply,
   browser: ChatGPTBrowser,
   body: ResponseRequest,
-  prepared: { prompt: string; contextText: string; toolsEnabled: boolean; structured: boolean },
+  prepared: { prompt: string; contextText: string; images: ImageInput[]; toolsEnabled: boolean; structured: boolean },
 ): Promise<void> {
   const id = `resp_${randomUUID().replaceAll('-', '')}`;
   const abort = new AbortController();
@@ -653,7 +667,7 @@ async function streamResponse(
 
   try {
     if (prepared.toolsEnabled) {
-      const raw = await collect(browser, prepared.prompt, abort.signal);
+      const raw = await collect(browser, prepared.prompt, abort.signal, prepared.images);
       const output = finalizeControlledOutput(raw, true, prepared.structured, body);
       if (output.kind === 'tool_calls') {
         for (const [outputIndex, call] of output.toolCalls.entries()) {
@@ -678,6 +692,7 @@ async function streamResponse(
           response: completed,
           inputItems: normalizedResponseInputItems(body),
           contextText: appendAssistantContext(prepared.contextText, output),
+          contextImages: prepared.images,
           createdAt: now(),
         });
         return;
@@ -692,6 +707,7 @@ async function streamResponse(
         response: completed,
         inputItems: normalizedResponseInputItems(body),
         contextText: appendAssistantContext(prepared.contextText, completedOutput),
+        contextImages: prepared.images,
         createdAt: now(),
       });
       return;
@@ -707,7 +723,7 @@ async function streamResponse(
 
     let text = '';
     if (prepared.structured) {
-      const raw = await collect(browser, prepared.prompt, abort.signal);
+      const raw = await collect(browser, prepared.prompt, abort.signal, prepared.images);
       const output = finalizeControlledOutput(raw, false, true, body);
       if (output.kind !== 'text') throw new Error('Structured response unexpectedly produced a tool call');
       text = output.content;
@@ -715,7 +731,7 @@ async function streamResponse(
         sequence_number: sequence++, item_id: messageId, output_index: 0, content_index: 0, delta: text,
       });
     } else {
-      for await (const delta of browser.generate(prepared.prompt, abort.signal)) {
+      for await (const delta of browser.generate(prepared.prompt, abort.signal, prepared.images)) {
         text += delta;
         writeResponseEvent(reply, 'response.output_text.delta', {
           sequence_number: sequence++, item_id: messageId, output_index: 0, content_index: 0, delta,
@@ -741,6 +757,7 @@ async function streamResponse(
       response: completed,
       inputItems: normalizedResponseInputItems(body),
       contextText: appendAssistantContext(prepared.contextText, output),
+      contextImages: prepared.images,
       createdAt: now(),
     });
   } catch (error) {

@@ -1,11 +1,7 @@
 import type { ChatCompletionRequest, ChatMessage, NormalizedFunctionTool, ResponseRequest } from './types.js';
-
-export class UnsupportedInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'UnsupportedInputError';
-  }
-}
+import { collectImages, type ImageInput } from './images.js';
+import { UnsupportedInputError } from './input-error.js';
+export { UnsupportedInputError };
 
 function contentToText(content: ChatMessage['content']): string {
   if (content == null) return '';
@@ -15,6 +11,7 @@ function contentToText(content: ChatMessage['content']): string {
     if (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') {
       return 'text' in part && typeof part.text === 'string' ? part.text : '';
     }
+    if (part.type === 'image_url' || part.type === 'input_image') return '\n[Image attached separately]\n';
     throw new UnsupportedInputError(`Content part type '${part.type}' is not supported by the ChatGPT web text gateway`);
   }).join('');
 }
@@ -52,6 +49,10 @@ export function serializeMessages(messages: ChatCompletionRequest['messages']): 
     '',
     transcript,
   ].join('\n');
+}
+
+export function chatImages(messages: ChatCompletionRequest['messages']): ImageInput[] {
+  return collectImages(messages.flatMap((message) => Array.isArray(message.content) ? message.content : []));
 }
 
 export function normalizeChatTools(request: ChatCompletionRequest): NormalizedFunctionTool[] {
@@ -148,9 +149,21 @@ function responsePartToText(part: unknown): string {
     return record.text;
   }
   if (record.type === 'input_image' || record.type === 'image_url') {
-    throw new UnsupportedInputError('Image inputs are not yet supported by the ChatGPT web text gateway');
+    return '\n[Image attached separately]\n';
   }
   return '';
+}
+
+export function responseImages(input: ResponseRequest['input']): ImageInput[] {
+  if (!Array.isArray(input)) return [];
+  const parts: unknown[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    if (record.type === 'input_image' || record.type === 'image_url') parts.push(record);
+    if (Array.isArray(record.content)) parts.push(...record.content);
+  }
+  return collectImages(parts);
 }
 
 function responseContentToText(content: unknown): string {
