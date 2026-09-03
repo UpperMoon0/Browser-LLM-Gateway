@@ -16,10 +16,33 @@ interface StoredEntry {
 
 const DEFAULT_MAX_ENTRIES = 200;
 const DEFAULT_MAX_IMAGE_BYTES = 128 * 1024 * 1024;
+const IMAGE_DATA_URL_PREFIX = /^data:image\/[^;,]+;base64,/i;
+
+function retainedEncodedImageBytes(value: unknown): number {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  let total = 0;
+
+  while (pending.length) {
+    const current = pending.pop();
+    if (typeof current === 'string') {
+      if (IMAGE_DATA_URL_PREFIX.test(current)) total += Buffer.byteLength(current, 'utf8');
+      continue;
+    }
+    if (!current || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    if (Array.isArray(current)) pending.push(...current);
+    else pending.push(...Object.values(current as Record<string, unknown>));
+  }
+
+  return total;
+}
 
 function retainedImageBytes(value: StoredResponse): number {
   const seen = new Set<Buffer>();
-  let total = 0;
+  let total = retainedEncodedImageBytes(value.inputItems);
   for (const image of value.contextImages) {
     if (seen.has(image.data)) continue;
     seen.add(image.data);
