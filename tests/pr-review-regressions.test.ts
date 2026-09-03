@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { responseImages, serializeResponsesInput } from '../src/openai/prompt.ts';
 import { ResponseStore, type StoredResponse } from '../src/openai/store.ts';
+import { responseRequestSchema } from '../src/openai/types.ts';
 
 function storedResponse(id: string, inputItems: unknown[]): StoredResponse {
   return {
@@ -87,11 +88,46 @@ test('Responses serialization preserves valid easy input messages with omitted t
 
 test('Responses serialization validates function-call item shapes', () => {
   assert.throws(
-    () => serializeResponsesInput([{ type: 'function_call', name: 'lookup', arguments: { q: 'x' } }]),
+    () => serializeResponsesInput([{ type: 'function_call', name: 'lookup', arguments: { q: 'x' }, call_id: 'call_1' }]),
     /Responses function_call items must contain string arguments/,
+  );
+  assert.throws(
+    () => serializeResponsesInput([{ type: 'function_call', name: 'lookup', arguments: '{}'}]),
+    /Responses function_call items must contain a non-empty call_id/,
+  );
+  assert.throws(
+    () => serializeResponsesInput([{ type: 'function_call_output', output: 'done' }]),
+    /Responses function_call_output items must contain a non-empty call_id/,
   );
   assert.throws(
     () => serializeResponsesInput([{ type: 'function_call_output', call_id: 'call_1', output: { type: 'input_text', text: 'x' } }]),
     /Responses function_call_output items must contain string or array output/,
   );
+});
+
+test('Responses json_schema format requires an OpenAI-compatible name', () => {
+  const base = {
+    model: 'chatgpt-web',
+    input: 'hello',
+    text: {
+      format: {
+        type: 'json_schema' as const,
+        schema: { type: 'object' },
+      },
+    },
+  };
+
+  assert.equal(responseRequestSchema.safeParse(base).success, false);
+  assert.equal(responseRequestSchema.safeParse({
+    ...base,
+    text: { format: { ...base.text.format, name: 'valid_schema-1' } },
+  }).success, true);
+  assert.equal(responseRequestSchema.safeParse({
+    ...base,
+    text: { format: { ...base.text.format, name: 'invalid schema name' } },
+  }).success, false);
+  assert.equal(responseRequestSchema.safeParse({
+    ...base,
+    text: { format: { ...base.text.format, name: 'x'.repeat(65) } },
+  }).success, false);
 });
