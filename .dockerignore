@@ -3,6 +3,9 @@ dist
 .data
 .git
 .github
+.env
+.env.*
+cookies.txt
 check-ui.js
 test-request.js
 *.png

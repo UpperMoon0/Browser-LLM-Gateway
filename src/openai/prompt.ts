@@ -127,7 +127,7 @@ export function withGenerationContract(
   if (tools.length && options.jsonSchema !== undefined) {
     blocks.push(`When returning a normal text answer, the envelope's content string must itself contain valid JSON following this schema: ${JSON.stringify(options.jsonSchema)}`);
   } else if (tools.length && options.jsonObject) {
-    blocks.push(`When returning a normal text answer, the envelope's content string must itself contain a valid JSON object.`);
+    blocks.push('When returning a normal text answer, the envelope\'s content string must itself contain a valid JSON object.');
   } else if (options.jsonSchema !== undefined) {
     blocks.push([
       'STRUCTURED OUTPUT CONTRACT:',
@@ -141,17 +141,28 @@ export function withGenerationContract(
   return blocks.join('\n\n');
 }
 
+const RESPONSE_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'developer']);
+const RESPONSE_DIRECT_ITEM_TYPES = new Set(['input_text', 'output_text', 'text', 'input_image', 'image_url']);
+
 function responsePartToText(part: unknown): string {
   if (typeof part === 'string') return part;
-  if (!part || typeof part !== 'object') return '';
+  if (!part || typeof part !== 'object') {
+    throw new UnsupportedInputError('Responses content parts must be strings or typed objects');
+  }
+
   const record = part as Record<string, unknown>;
-  if ((record.type === 'input_text' || record.type === 'output_text' || record.type === 'text') && typeof record.text === 'string') {
+  if (record.type === 'input_text' || record.type === 'output_text' || record.type === 'text') {
+    if (typeof record.text !== 'string') {
+      throw new UnsupportedInputError(`Responses content part '${record.type}' must contain text`);
+    }
     return record.text;
   }
   if (record.type === 'input_image' || record.type === 'image_url') {
     return '\n[Image attached separately]\n';
   }
-  return '';
+
+  const type = typeof record.type === 'string' ? record.type : 'unknown';
+  throw new UnsupportedInputError(`Responses content part type '${type}' is not supported by the ChatGPT web gateway`);
 }
 
 export function responseImages(input: ResponseRequest['input']): ImageInput[] {
@@ -162,6 +173,7 @@ export function responseImages(input: ResponseRequest['input']): ImageInput[] {
     const record = item as Record<string, unknown>;
     if (record.type === 'input_image' || record.type === 'image_url') parts.push(record);
     if (Array.isArray(record.content)) parts.push(...record.content);
+    if (record.type === 'function_call_output' && Array.isArray(record.output)) parts.push(...record.output);
   }
   return collectImages(parts);
 }
@@ -169,7 +181,17 @@ export function responseImages(input: ResponseRequest['input']): ImageInput[] {
 function responseContentToText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map(responsePartToText).join('');
-  return '';
+  if (content && typeof content === 'object') return responsePartToText(content);
+  if (content == null) return '';
+  throw new UnsupportedInputError('Responses content must be a string, typed object, or array');
+}
+
+function responseRole(record: Record<string, unknown>, required: boolean): string {
+  if (record.role === undefined && !required) return 'USER';
+  if (typeof record.role !== 'string' || !RESPONSE_MESSAGE_ROLES.has(record.role.toLowerCase())) {
+    throw new UnsupportedInputError('Responses message role must be one of user, assistant, system, or developer');
+  }
+  return record.role.toUpperCase();
 }
 
 export function serializeResponsesInput(input: ResponseRequest['input']): string {
@@ -177,10 +199,21 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
 
   return input.map((item) => {
     if (typeof item === 'string') return `<USER>\n${item}\n</USER>`;
-    if (!item || typeof item !== 'object') return '';
+    if (!item || typeof item !== 'object') {
+      throw new UnsupportedInputError('Responses input items must be strings or typed objects');
+    }
     const record = item as Record<string, unknown>;
 
     if (record.type === 'function_call') {
+      if (typeof record.name !== 'string' || !record.name) {
+        throw new UnsupportedInputError('Responses function_call items must contain a non-empty name');
+      }
+      if (typeof record.arguments !== 'string') {
+        throw new UnsupportedInputError('Responses function_call items must contain string arguments');
+      }
+      if (typeof record.call_id !== 'string' || !record.call_id) {
+        throw new UnsupportedInputError('Responses function_call items must contain a non-empty call_id');
+      }
       return `<ASSISTANT_TOOL_CALL>\n${JSON.stringify({
         call_id: record.call_id,
         name: record.name,
@@ -189,13 +222,35 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
     }
 
     if (record.type === 'function_call_output') {
-      return `<TOOL tool_call_id=${JSON.stringify(record.call_id ?? '')}>\n${responseContentToText(record.output)}\n</TOOL>`;
+      if (!Object.prototype.hasOwnProperty.call(record, 'output') || (typeof record.output !== 'string' && !Array.isArray(record.output))) {
+        throw new UnsupportedInputError('Responses function_call_output items must contain string or array output');
+      }
+      if (typeof record.call_id !== 'string' || !record.call_id) {
+        throw new UnsupportedInputError('Responses function_call_output items must contain a non-empty call_id');
+      }
+      return `<TOOL tool_call_id=${JSON.stringify(record.call_id)}>\n${responseContentToText(record.output)}\n</TOOL>`;
     }
 
-    const role = typeof record.role === 'string' ? record.role.toUpperCase() : 'USER';
-    const text = responseContentToText(record.content ?? record.text ?? '');
+    if (record.type !== undefined && typeof record.type !== 'string') {
+      throw new UnsupportedInputError('Responses input item type must be a string when provided');
+    }
+
+    if (record.type === undefined || record.type === 'message') {
+      if (!Object.prototype.hasOwnProperty.call(record, 'role') || !Object.prototype.hasOwnProperty.call(record, 'content')) {
+        throw new UnsupportedInputError('Responses message items must contain both role and content');
+      }
+      const role = responseRole(record, true);
+      return `<${role}>\n${responseContentToText(record.content)}\n</${role}>`;
+    }
+
+    if (!RESPONSE_DIRECT_ITEM_TYPES.has(record.type)) {
+      throw new UnsupportedInputError(`Responses input item type '${record.type}' is not supported by the ChatGPT web gateway`);
+    }
+
+    const role = responseRole(record, false);
+    const text = responseContentToText(record);
     return `<${role}>\n${text}\n</${role}>`;
-  }).filter(Boolean).join('\n\n');
+  }).join('\n\n');
 }
 
 export function responseTools(request: ResponseRequest): NormalizedFunctionTool[] {

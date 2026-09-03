@@ -1,14 +1,13 @@
-version: '3.8'
-
 services:
   gateway:
     build: .
     ports:
-      - "11436:11436"
+      - "127.0.0.1:11436:11436"
     volumes:
       - ./.data/chatgpt-profile:/app/.data/chatgpt-profile
     environment:
       - HOST=0.0.0.0
       - PORT=11436
       - HEADLESS=true
+      - GATEWAY_API_KEY=${GATEWAY_API_KEY:?GATEWAY_API_KEY must be set for Docker deployments}
     restart: unless-stopped
