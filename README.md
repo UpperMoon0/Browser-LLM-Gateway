@@ -12,9 +12,9 @@ An experimental **OpenAI-compatible LLM gateway backed by the ChatGPT web UI**. 
 | --- | --- | --- |
 | `GET /v1/models` | ✅ | Lists configured aliases. |
 | `GET /v1/models/:model` | ✅ | Model lookup. |
-| `POST /v1/chat/completions` | ✅ | Non-streaming + OpenAI SSE. |
-| `POST /v1/completions` | ✅ | Legacy text completions, including streaming. |
-| `POST /v1/responses` | ✅ | Modern Responses API, including SSE. |
+| `POST /v1/chat/completions` | ✅ | Non-streaming + OpenAI-compatible SSE framing. |
+| `POST /v1/completions` | ✅ | Legacy text completions, including SSE framing. |
+| `POST /v1/responses` | ✅ | Modern Responses API, including SSE events. |
 | `GET /v1/responses/:id` | ✅ | In-memory retrieval for stored responses. |
 | `DELETE /v1/responses/:id` | ✅ | Deletes an in-memory stored response. |
 | `POST /v1/responses/:id/cancel` | ⚠️ | Returns the completed response; browser generations are synchronous. |
@@ -22,6 +22,8 @@ An experimental **OpenAI-compatible LLM gateway backed by the ChatGPT web UI**. 
 | `GET /health`, `GET /v1/health` | ✅ | Browser/session health. |
 
 All other `/v1/*` routes return an OpenAI-shaped `501 unsupported_endpoint` error instead of a generic HTML/404 response. That means OpenAI clients can call the gateway safely and get a predictable API error for capabilities that cannot honestly be provided through the ChatGPT text UI.
+
+Because the backend observes and stabilizes a rendered webpage rather than receiving model-token deltas, SSE responses can be buffered until the current ChatGPT response is stable. Clients still receive the expected SSE event/chunk format, but should not assume token-by-token latency.
 
 ### Chat Completions compatibility
 
@@ -50,7 +52,7 @@ The gateway decodes each image, uploads it through ChatGPT's web composer, waits
 
 Kilo persists image file parts in its session and includes the relevant history in later OpenAI-compatible requests. Because this gateway starts a fresh ChatGPT conversation for every HTTP request, those retained images are uploaded again on the later request. This preserves request isolation: image recall comes from client-supplied context, not from keeping a hidden ChatGPT conversation alive.
 
-For the Responses API, images are also retained in the gateway's in-memory `previous_response_id` context and re-uploaded on continuation. This state is process-local and is lost when the gateway restarts.
+For the Responses API, images are also retained in the gateway's in-memory `previous_response_id` context and re-uploaded on continuation. This state is process-local and is lost when the gateway restarts. The response store is bounded by both entry count and retained image payload: by default it keeps at most 200 responses and 128 MiB of retained image buffers, evicting the oldest entries when either limit is exceeded.
 
 Remote HTTP(S) image URLs and `file_id` references are rejected rather than fetched by the gateway. Convert them to base64 data URLs before sending. A request may contain at most 20 images, each no larger than 20 MB decoded.
 
@@ -67,6 +69,8 @@ Supported/adapted:
 - non-streaming responses
 - streaming events including `response.created`, output item/content events, text deltas, function-call argument events, and `response.completed`
 - stored response retrieval/deletion/input items
+
+Unsupported Responses item/content types are rejected explicitly instead of being silently omitted from the browser transcript.
 
 Built-in Responses tools such as hosted web search, file search, code interpreter, or computer use are **not** exposed because the browser UI does not provide their OpenAI wire-level results reliably.
 
@@ -148,10 +152,13 @@ npm run auth
 
 When `cookies.txt` exists, this command imports it and verifies that the normal
 ChatGPT composer is visible. Without a cookie file, it falls back to interactive
-sign-in: sign in normally, then return to the terminal and press Enter.
+sign-in: sign in normally, then return to the terminal and press Enter. Interactive
+authentication is also verified against the ChatGPT session endpoint and composer
+before the command reports success.
 
 Authentication is stored under `.data/chatgpt-profile` by default. **Treat both
-the profile directory and `cookies.txt` as credentials.** They are ignored by Git.
+the profile directory and `cookies.txt` as credentials.** They are ignored by Git
+and excluded from the Docker build context.
 
 ### Rotate cookies while running
 
@@ -180,9 +187,22 @@ Default URL: `http://127.0.0.1:11436`
 
 The HTTP server starts even if ChatGPT authentication is missing/expired. `/health` then reports `degraded`, while generation calls return an OpenAI-shaped browser/upstream error. This is intentional so Docker/Kubernetes/process supervisors can keep the gateway running while auth is repaired.
 
+Keyless operation is deliberately restricted to loopback binds. If `HOST` is a non-loopback address such as `0.0.0.0`, `::`, a LAN address, or a public interface, the process refuses to listen unless `GATEWAY_API_KEY` is set.
+
+### Docker Compose
+
+Docker Compose uses a secure default: it publishes the port only on host loopback and requires an API key because the process must listen on `0.0.0.0` inside the container.
+
+```bash
+export GATEWAY_API_KEY='replace-with-a-long-random-secret'
+docker compose up --build
+```
+
+A direct Docker deployment that sets `HOST=0.0.0.0` must also provide `GATEWAY_API_KEY`.
+
 ## OpenAI SDK usage
 
-Use any placeholder API key when `GATEWAY_API_KEY` is empty, because most OpenAI SDKs require a non-empty key locally.
+Use any placeholder API key when `GATEWAY_API_KEY` is empty on a loopback-only deployment, because most OpenAI SDKs require a non-empty key locally.
 
 ### JavaScript / TypeScript
 
@@ -266,14 +286,14 @@ If ChatGPT chooses the tool, the gateway translates its internal control JSON in
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HOST` | `127.0.0.1` | HTTP bind host. |
+| `HOST` | `127.0.0.1` | HTTP bind host. Non-loopback binds require `GATEWAY_API_KEY`. |
 | `PORT` | `11436` | HTTP port. |
 | `HEADLESS` | `false` | Run persistent Chromium headless after authentication. |
 | `CHATGPT_BROWSER_CHANNEL` | `chrome` | Playwright browser channel. Use the browser family that exported `cookies.txt`. |
 | `CHATGPT_BASE_URL` | `https://chatgpt.com` | ChatGPT web root. |
 | `CHATGPT_PROFILE_DIR` | `.data/chatgpt-profile` | Persistent browser state. |
 | `CHATGPT_COOKIE_FILE` | `cookies.txt` | Optional Netscape-format cookie file imported whenever Chromium starts. |
-| `GATEWAY_API_KEY` | empty | If set, require `Authorization: Bearer ...`. |
+| `GATEWAY_API_KEY` | empty | Optional on loopback; required for any non-loopback bind. Requires `Authorization: Bearer ...` when set. |
 | `MODEL_ID` | `chatgpt-web` | Main advertised model ID. |
 | `MODEL_ALIASES` | empty | Comma-separated additional advertised model names. |
 | `STRICT_MODEL_NAMES` | `false` | If false, any requested model name is accepted as an alias for the currently selected ChatGPT web model. |
@@ -292,11 +312,12 @@ The ChatGPT webpage does not expose authoritative API token accounting. Compatib
 ## Development validation
 
 ```bash
-npm run typecheck
-npm run test:unit
+npm run check
 ```
 
-The unit suite checks stop-sequence handling, control-envelope parsing, tool-call conversion primitives, and structured-output formatting.
+`npm run check` builds production TypeScript, type-checks source/scripts/tests, and runs the unit suite. GitHub Actions runs the same check on Node.js 20 and 22 for pushes and pull requests targeting `master`. Browser authentication/live ChatGPT access is intentionally not required by this lightweight CI job.
+
+The unit suite checks stop-sequence handling, control-envelope parsing, tool-call conversion primitives, structured-output formatting, network-bind security, response-store memory eviction, Responses input rejection, cookie parsing, and composer recovery primitives.
 
 ## Reliability notes
 
@@ -305,6 +326,6 @@ This backend is inherently more brittle than a direct API:
 1. ChatGPT selectors can change; update `src/chatgpt/selectors.ts` first.
 2. Login state can expire; rerun `npm run auth`.
 3. One browser session means requests queue behind each other.
-4. Website output can re-render while streaming; already-emitted SSE bytes cannot be retracted.
+4. SSE transport can be buffered while the gateway waits for a stable rendered answer.
 5. Tool calls and structured output are prompt-enforced/emulated rather than native API features.
-6. Response storage is in-memory and is lost when the process restarts.
+6. Response storage is in-memory, bounded by entry count and retained image bytes, and lost when the process restarts.
