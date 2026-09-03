@@ -9,26 +9,68 @@ export interface StoredResponse {
   createdAt: number;
 }
 
-export class ResponseStore {
-  private readonly values = new Map<string, StoredResponse>();
+interface StoredEntry {
+  value: StoredResponse;
+  imageBytes: number;
+}
 
-  constructor(private readonly maxEntries = 200) {}
+const DEFAULT_MAX_ENTRIES = 200;
+const DEFAULT_MAX_IMAGE_BYTES = 128 * 1024 * 1024;
+
+function retainedImageBytes(value: StoredResponse): number {
+  const seen = new Set<Buffer>();
+  let total = 0;
+  for (const image of value.contextImages) {
+    if (seen.has(image.data)) continue;
+    seen.add(image.data);
+    total += image.data.byteLength;
+  }
+  return total;
+}
+
+export class ResponseStore {
+  private readonly values = new Map<string, StoredEntry>();
+  private imageBytes = 0;
+
+  constructor(
+    private readonly maxEntries = DEFAULT_MAX_ENTRIES,
+    private readonly maxImageBytes = DEFAULT_MAX_IMAGE_BYTES,
+  ) {
+    if (!Number.isInteger(maxEntries) || maxEntries <= 0) {
+      throw new Error('maxEntries must be a positive integer');
+    }
+    if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes <= 0) {
+      throw new Error('maxImageBytes must be a positive safe integer');
+    }
+  }
 
   set(value: StoredResponse): void {
-    this.values.delete(value.id);
-    this.values.set(value.id, value);
-    while (this.values.size > this.maxEntries) {
+    this.remove(value.id);
+
+    const entry = { value, imageBytes: retainedImageBytes(value) };
+    this.values.set(value.id, entry);
+    this.imageBytes += entry.imageBytes;
+
+    while (this.values.size > this.maxEntries || this.imageBytes > this.maxImageBytes) {
       const oldest = this.values.keys().next().value as string | undefined;
       if (!oldest) break;
-      this.values.delete(oldest);
+      this.remove(oldest);
     }
   }
 
   get(id: string): StoredResponse | undefined {
-    return this.values.get(id);
+    return this.values.get(id)?.value;
   }
 
   delete(id: string): boolean {
-    return this.values.delete(id);
+    return this.remove(id);
+  }
+
+  private remove(id: string): boolean {
+    const entry = this.values.get(id);
+    if (!entry) return false;
+    this.values.delete(id);
+    this.imageBytes -= entry.imageBytes;
+    return true;
   }
 }
