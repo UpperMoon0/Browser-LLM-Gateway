@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { registerOpenAIRoutes } from './api/openai.js';
 import { ChatGPTBrowser } from './chatgpt/browser.js';
-import { config } from './config.js';
+import { assertSecureBindConfiguration, config } from './config.js';
 import { errorBody } from './openai/errors.js';
 
 const app = Fastify({ logger: true, bodyLimit: 32 * 1024 * 1024 });
@@ -78,6 +78,7 @@ process.on('SIGINT', () => void shutdown().finally(() => process.exit(0)));
 process.on('SIGTERM', () => void shutdown().finally(() => process.exit(0)));
 
 try {
+  assertSecureBindConfiguration();
   await app.listen({ host: config.host, port: config.port });
   // Warm the browser after the HTTP server is listening. Authentication problems are
   // reflected through /health and generation errors rather than crashing the gateway.
