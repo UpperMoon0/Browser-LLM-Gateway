@@ -125,12 +125,17 @@ export const responseToolChoiceSchema = z.union([
   }).passthrough(),
 ]);
 
+const responseFormatNameSchema = z.string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, 'must contain only letters, numbers, underscores, or dashes');
+
 export const responseTextFormatSchema = z.union([
   z.object({ type: z.literal('text') }).passthrough(),
   z.object({ type: z.literal('json_object') }).passthrough(),
   z.object({
     type: z.literal('json_schema'),
-    name: z.string().optional(),
+    name: responseFormatNameSchema,
     description: z.string().optional(),
     schema: z.record(z.string(), z.unknown()),
     strict: z.boolean().optional(),
