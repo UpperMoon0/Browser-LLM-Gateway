@@ -30,6 +30,7 @@ function retainedEncodedImageBytes(value: unknown): number {
       continue;
     }
     if (!current || typeof current !== 'object') continue;
+    if (Buffer.isBuffer(current)) continue;
     if (seen.has(current)) continue;
     seen.add(current);
 
@@ -42,7 +43,7 @@ function retainedEncodedImageBytes(value: unknown): number {
 
 function retainedImageBytes(value: StoredResponse): number {
   const seen = new Set<Buffer>();
-  let total = retainedEncodedImageBytes(value.inputItems);
+  let total = retainedEncodedImageBytes(value);
   for (const image of value.contextImages) {
     if (seen.has(image.data)) continue;
     seen.add(image.data);
