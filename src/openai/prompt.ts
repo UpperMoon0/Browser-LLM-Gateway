@@ -141,6 +141,9 @@ export function withGenerationContract(
   return blocks.join('\n\n');
 }
 
+const RESPONSE_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'developer']);
+const RESPONSE_DIRECT_ITEM_TYPES = new Set(['input_text', 'output_text', 'text', 'input_image', 'image_url']);
+
 function responsePartToText(part: unknown): string {
   if (typeof part === 'string') return part;
   if (!part || typeof part !== 'object') {
@@ -183,6 +186,14 @@ function responseContentToText(content: unknown): string {
   throw new UnsupportedInputError('Responses content must be a string, typed object, or array');
 }
 
+function responseRole(record: Record<string, unknown>, required: boolean): string {
+  if (record.role === undefined && !required) return 'USER';
+  if (typeof record.role !== 'string' || !RESPONSE_MESSAGE_ROLES.has(record.role.toLowerCase())) {
+    throw new UnsupportedInputError('Responses message role must be one of user, assistant, system, or developer');
+  }
+  return record.role.toUpperCase();
+}
+
 export function serializeResponsesInput(input: ResponseRequest['input']): string {
   if (typeof input === 'string') return `<USER>\n${input}\n</USER>`;
 
@@ -194,6 +205,15 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
     const record = item as Record<string, unknown>;
 
     if (record.type === 'function_call') {
+      if (typeof record.name !== 'string' || !record.name) {
+        throw new UnsupportedInputError('Responses function_call items must contain a non-empty name');
+      }
+      if (typeof record.arguments !== 'string') {
+        throw new UnsupportedInputError('Responses function_call items must contain string arguments');
+      }
+      if (record.call_id !== undefined && typeof record.call_id !== 'string') {
+        throw new UnsupportedInputError('Responses function_call call_id must be a string when provided');
+      }
       return `<ASSISTANT_TOOL_CALL>\n${JSON.stringify({
         call_id: record.call_id,
         name: record.name,
@@ -202,17 +222,33 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
     }
 
     if (record.type === 'function_call_output') {
+      if (!Object.prototype.hasOwnProperty.call(record, 'output') || (typeof record.output !== 'string' && !Array.isArray(record.output))) {
+        throw new UnsupportedInputError('Responses function_call_output items must contain string or array output');
+      }
+      if (record.call_id !== undefined && typeof record.call_id !== 'string') {
+        throw new UnsupportedInputError('Responses function_call_output call_id must be a string when provided');
+      }
       return `<TOOL tool_call_id=${JSON.stringify(record.call_id ?? '')}>\n${responseContentToText(record.output)}\n</TOOL>`;
     }
 
-    const supportedItemTypes = new Set(['message', 'input_text', 'output_text', 'text', 'input_image', 'image_url']);
-    if (typeof record.type === 'string' && !supportedItemTypes.has(record.type)) {
+    if (record.type !== undefined && typeof record.type !== 'string') {
+      throw new UnsupportedInputError('Responses input item type must be a string when provided');
+    }
+
+    if (record.type === undefined || record.type === 'message') {
+      if (!Object.prototype.hasOwnProperty.call(record, 'role') || !Object.prototype.hasOwnProperty.call(record, 'content')) {
+        throw new UnsupportedInputError('Responses message items must contain both role and content');
+      }
+      const role = responseRole(record, true);
+      return `<${role}>\n${responseContentToText(record.content)}\n</${role}>`;
+    }
+
+    if (!RESPONSE_DIRECT_ITEM_TYPES.has(record.type)) {
       throw new UnsupportedInputError(`Responses input item type '${record.type}' is not supported by the ChatGPT web gateway`);
     }
 
-    const role = typeof record.role === 'string' ? record.role.toUpperCase() : 'USER';
-    const directPart = typeof record.type === 'string' && supportedItemTypes.has(record.type) && record.type !== 'message';
-    const text = responseContentToText(directPart ? record : (record.content ?? record.text ?? ''));
+    const role = responseRole(record, false);
+    const text = responseContentToText(record);
     return `<${role}>\n${text}\n</${role}>`;
   }).join('\n\n');
 }
