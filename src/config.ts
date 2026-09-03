@@ -1,14 +1,27 @@
+import { isIP } from 'node:net';
 import { resolve } from 'node:path';
 
-function bool(value: string | undefined, fallback: boolean): boolean {
+function bool(name: string, value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${name} must be a boolean value (true/false, 1/0, yes/no, on/off)`);
 }
 
-function int(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+function int(
+  name: string,
+  value: string | undefined,
+  fallback: number,
+  min = 1,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
+  if (value === undefined || !value.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
 }
 
 function csv(value: string | undefined): string[] {
@@ -17,8 +30,8 @@ function csv(value: string | undefined): string[] {
 
 export const config = {
   host: process.env.HOST ?? '127.0.0.1',
-  port: int(process.env.PORT, 11436),
-  headless: bool(process.env.HEADLESS, false),
+  port: int('PORT', process.env.PORT, 11436, 1, 65_535),
+  headless: bool('HEADLESS', process.env.HEADLESS, false),
   browserChannel: process.env.CHATGPT_BROWSER_CHANNEL?.trim() || 'chrome',
   chatgptBaseUrl: process.env.CHATGPT_BASE_URL ?? 'https://chatgpt.com',
   profileDir: resolve(process.env.CHATGPT_PROFILE_DIR ?? '.data/chatgpt-profile'),
@@ -26,10 +39,10 @@ export const config = {
   gatewayApiKey: process.env.GATEWAY_API_KEY?.trim() || undefined,
   modelId: process.env.MODEL_ID?.trim() || 'chatgpt-web',
   modelAliases: csv(process.env.MODEL_ALIASES),
-  strictModelNames: bool(process.env.STRICT_MODEL_NAMES, false),
-  navigationTimeoutMs: int(process.env.CHATGPT_NAVIGATION_TIMEOUT_MS, 30_000),
-  composerTimeoutMs: int(process.env.COMPOSER_TIMEOUT_MS, 10_000),
-  browserTimeoutMs: int(process.env.BROWSER_TIMEOUT_MS, 10 * 60_000),
+  strictModelNames: bool('STRICT_MODEL_NAMES', process.env.STRICT_MODEL_NAMES, false),
+  navigationTimeoutMs: int('CHATGPT_NAVIGATION_TIMEOUT_MS', process.env.CHATGPT_NAVIGATION_TIMEOUT_MS, 30_000),
+  composerTimeoutMs: int('COMPOSER_TIMEOUT_MS', process.env.COMPOSER_TIMEOUT_MS, 10_000),
+  browserTimeoutMs: int('BROWSER_TIMEOUT_MS', process.env.BROWSER_TIMEOUT_MS, 10 * 60_000),
 };
 
 export function advertisedModels(): string[] {
@@ -44,8 +57,8 @@ export function acceptsModel(model: string): boolean {
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[(.*)\]$/u, '$1');
   if (normalized === 'localhost' || normalized === '::1') return true;
-  if (/^127(?:\.\d{1,3}){3}$/u.test(normalized)) return true;
-  return /^::ffff:127(?:\.\d{1,3}){3}$/u.test(normalized);
+  if (isIP(normalized) === 4) return normalized.startsWith('127.');
+  return isIP(normalized) === 6 && normalized.startsWith('::ffff:127.');
 }
 
 export function assertSecureBindConfiguration(
