@@ -40,3 +40,21 @@ export function acceptsModel(model: string): boolean {
   if (!config.strictModelNames) return Boolean(model);
   return advertisedModels().includes(model);
 }
+
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[(.*)\]$/u, '$1');
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  if (/^127(?:\.\d{1,3}){3}$/u.test(normalized)) return true;
+  return /^::ffff:127(?:\.\d{1,3}){3}$/u.test(normalized);
+}
+
+export function assertSecureBindConfiguration(
+  host = config.host,
+  gatewayApiKey = config.gatewayApiKey,
+): void {
+  if (gatewayApiKey || isLoopbackHost(host)) return;
+  throw new Error(
+    `Refusing to bind Browser-LLM-Gateway to non-loopback host '${host}' without GATEWAY_API_KEY. `
+    + 'Set a strong GATEWAY_API_KEY or bind HOST to localhost/127.0.0.1.',
+  );
+}
