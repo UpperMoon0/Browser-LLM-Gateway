@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { assertSecureBindConfiguration, isLoopbackHost } from '../src/config.ts';
 import { normalizeJsonText, parseControlledOutput } from '../src/openai/output.ts';
 import { StopFilter } from '../src/openai/stop.ts';
-import { chatImages, responseImages, serializeMessages, withGenerationContract } from '../src/openai/prompt.ts';
+import {
+  chatImages,
+  responseImages,
+  serializeMessages,
+  serializeResponsesInput,
+  withGenerationContract,
+} from '../src/openai/prompt.ts';
+import { ResponseStore, type StoredResponse } from '../src/openai/store.ts';
+import { responseRequestSchema } from '../src/openai/types.ts';
 import { StableSnapshot } from '../src/chatgpt/snapshot.ts';
 import { parseNetscapeCookies } from '../src/chatgpt/cookies.ts';
 import {
@@ -263,4 +272,92 @@ test('remote image URLs fail explicitly instead of silently losing vision contex
     }]),
     /Only base64 data URL image inputs/,
   );
+});
+
+test('non-loopback gateway binds require authentication', () => {
+  assert.equal(isLoopbackHost('127.0.0.1'), true);
+  assert.equal(isLoopbackHost('127.12.34.56'), true);
+  assert.equal(isLoopbackHost('::1'), true);
+  assert.equal(isLoopbackHost('[::1]'), true);
+  assert.equal(isLoopbackHost('0.0.0.0'), false);
+  assert.equal(isLoopbackHost('192.168.1.20'), false);
+
+  assert.doesNotThrow(() => assertSecureBindConfiguration('127.0.0.1', undefined));
+  assert.doesNotThrow(() => assertSecureBindConfiguration('0.0.0.0', 'secret'));
+  assert.throws(
+    () => assertSecureBindConfiguration('0.0.0.0', undefined),
+    /Refusing to bind Browser-LLM-Gateway/,
+  );
+});
+
+function storedResponse(id: string, imageSizes: number[]): StoredResponse {
+  return {
+    id,
+    response: { id },
+    inputItems: [],
+    contextText: '',
+    contextImages: imageSizes.map((size, index) => ({
+      mimeType: 'image/png',
+      data: Buffer.alloc(size),
+      filename: `image-${index}.png`,
+    })),
+    createdAt: 0,
+  };
+}
+
+test('ResponseStore evicts oldest responses when retained image memory exceeds its budget', () => {
+  const store = new ResponseStore(10, 5);
+  store.set(storedResponse('first', [3]));
+  store.set(storedResponse('second', [3]));
+
+  assert.equal(store.get('first'), undefined);
+  assert.equal(store.get('second')?.id, 'second');
+});
+
+test('ResponseStore keeps its existing entry-count eviction behavior', () => {
+  const store = new ResponseStore(2, 1_024);
+  store.set(storedResponse('one', []));
+  store.set(storedResponse('two', []));
+  store.set(storedResponse('three', []));
+
+  assert.equal(store.get('one'), undefined);
+  assert.equal(store.get('two')?.id, 'two');
+  assert.equal(store.get('three')?.id, 'three');
+});
+
+test('Responses serialization rejects unsupported input instead of silently dropping it', () => {
+  assert.throws(
+    () => serializeResponsesInput([{ type: 'file_search_call', id: 'search_1' }]),
+    /Responses input item type 'file_search_call' is not supported/,
+  );
+  assert.throws(
+    () => serializeResponsesInput([{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_file', file_id: 'file_1' }],
+    }]),
+    /Responses content part type 'input_file' is not supported/,
+  );
+});
+
+test('Responses serialization preserves direct image items in the transcript', () => {
+  const text = serializeResponsesInput([{
+    type: 'input_image',
+    image_url: 'data:image/png;base64,iVBORw0KGgo=',
+  }]);
+  assert.match(text, /\[Image attached separately\]/);
+});
+
+test('Responses schema rejects unsupported tool-choice and text-format controls', () => {
+  assert.equal(responseRequestSchema.safeParse({
+    model: 'chatgpt-web',
+    input: 'hello',
+    tool_choice: { type: 'computer' },
+  }).success, false);
+
+  assert.equal(responseRequestSchema.safeParse({
+    model: 'chatgpt-web',
+    input: 'hello',
+    text: { format: { type: 'xml' } },
+  }).success, false);
 });
