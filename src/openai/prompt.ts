@@ -211,8 +211,8 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
       if (typeof record.arguments !== 'string') {
         throw new UnsupportedInputError('Responses function_call items must contain string arguments');
       }
-      if (record.call_id !== undefined && typeof record.call_id !== 'string') {
-        throw new UnsupportedInputError('Responses function_call call_id must be a string when provided');
+      if (typeof record.call_id !== 'string' || !record.call_id) {
+        throw new UnsupportedInputError('Responses function_call items must contain a non-empty call_id');
       }
       return `<ASSISTANT_TOOL_CALL>\n${JSON.stringify({
         call_id: record.call_id,
@@ -225,10 +225,10 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
       if (!Object.prototype.hasOwnProperty.call(record, 'output') || (typeof record.output !== 'string' && !Array.isArray(record.output))) {
         throw new UnsupportedInputError('Responses function_call_output items must contain string or array output');
       }
-      if (record.call_id !== undefined && typeof record.call_id !== 'string') {
-        throw new UnsupportedInputError('Responses function_call_output call_id must be a string when provided');
+      if (typeof record.call_id !== 'string' || !record.call_id) {
+        throw new UnsupportedInputError('Responses function_call_output items must contain a non-empty call_id');
       }
-      return `<TOOL tool_call_id=${JSON.stringify(record.call_id ?? '')}>\n${responseContentToText(record.output)}\n</TOOL>`;
+      return `<TOOL tool_call_id=${JSON.stringify(record.call_id)}>\n${responseContentToText(record.output)}\n</TOOL>`;
     }
 
     if (record.type !== undefined && typeof record.type !== 'string') {
