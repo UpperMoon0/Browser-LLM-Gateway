@@ -8,7 +8,7 @@ const app = Fastify({ logger: true, bodyLimit: 32 * 1024 * 1024 });
 const browser = new ChatGPTBrowser();
 
 app.addHook('onRequest', async (request, reply) => {
-  if (request.url === '/health' || request.url === '/v1/health') return;
+  if (request.url === '/health') return;
   if (!config.gatewayApiKey) return;
 
   const authorization = request.headers.authorization;
@@ -23,15 +23,25 @@ app.get('/', async () => ({
   endpoints: ['/v1/models', '/v1/chat/completions', '/v1/completions', '/v1/responses'],
 }));
 
-const health = async () => {
+app.get('/health', async () => {
+  const status = await browser.status(false);
+  return {
+    status: status.ready ? 'ok' : 'degraded',
+    browser: {
+      started: status.started,
+      ready: status.ready,
+      busy: status.busy,
+    },
+  };
+});
+
+app.get('/v1/health', async () => {
   const status = await browser.status(false);
   return {
     status: status.ready ? 'ok' : 'degraded',
     browser: status,
   };
-};
-app.get('/health', health);
-app.get('/v1/health', health);
+});
 
 app.post('/v1/auth/cookies', async (request, reply) => {
   const body = request.body;
