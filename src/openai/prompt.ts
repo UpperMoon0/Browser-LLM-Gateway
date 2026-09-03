@@ -170,6 +170,7 @@ export function responseImages(input: ResponseRequest['input']): ImageInput[] {
     const record = item as Record<string, unknown>;
     if (record.type === 'input_image' || record.type === 'image_url') parts.push(record);
     if (Array.isArray(record.content)) parts.push(...record.content);
+    if (record.type === 'function_call_output' && Array.isArray(record.output)) parts.push(...record.output);
   }
   return collectImages(parts);
 }
@@ -177,13 +178,9 @@ export function responseImages(input: ResponseRequest['input']): ImageInput[] {
 function responseContentToText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map(responsePartToText).join('');
-  if (content && typeof content === 'object') {
-    const record = content as Record<string, unknown>;
-    if (typeof record.type === 'string') return responsePartToText(record);
-    return JSON.stringify(record);
-  }
+  if (content && typeof content === 'object') return responsePartToText(content);
   if (content == null) return '';
-  return String(content);
+  throw new UnsupportedInputError('Responses content must be a string, typed object, or array');
 }
 
 export function serializeResponsesInput(input: ResponseRequest['input']): string {
