@@ -41,7 +41,6 @@ export const functionToolSchema = z.object({
   }).passthrough(),
 }).passthrough();
 
-
 const legacyFunctionSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
@@ -118,15 +117,35 @@ const responseFunctionToolSchema = z.object({
   strict: z.boolean().optional(),
 }).passthrough();
 
+export const responseToolChoiceSchema = z.union([
+  z.enum(['none', 'auto', 'required']),
+  z.object({
+    type: z.literal('function'),
+    name: z.string().min(1),
+  }).passthrough(),
+]);
+
+export const responseTextFormatSchema = z.union([
+  z.object({ type: z.literal('text') }).passthrough(),
+  z.object({ type: z.literal('json_object') }).passthrough(),
+  z.object({
+    type: z.literal('json_schema'),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    schema: z.record(z.string(), z.unknown()),
+    strict: z.boolean().optional(),
+  }).passthrough(),
+]);
+
 export const responseRequestSchema = z.object({
   model: z.string().min(1).default('chatgpt-web'),
   input: z.union([z.string(), z.array(z.unknown())]),
   instructions: z.string().optional(),
   stream: z.boolean().default(false),
   tools: z.array(z.union([responseFunctionToolSchema, z.object({ type: z.string() }).passthrough()])).optional(),
-  tool_choice: z.unknown().optional(),
+  tool_choice: responseToolChoiceSchema.optional(),
   parallel_tool_calls: z.boolean().optional(),
-  text: z.object({ format: z.unknown().optional() }).passthrough().optional(),
+  text: z.object({ format: responseTextFormatSchema.optional() }).passthrough().optional(),
   temperature: z.number().optional(),
   top_p: z.number().optional(),
   max_output_tokens: z.number().int().positive().optional(),
