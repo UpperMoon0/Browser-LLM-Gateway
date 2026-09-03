@@ -127,7 +127,7 @@ export function withGenerationContract(
   if (tools.length && options.jsonSchema !== undefined) {
     blocks.push(`When returning a normal text answer, the envelope's content string must itself contain valid JSON following this schema: ${JSON.stringify(options.jsonSchema)}`);
   } else if (tools.length && options.jsonObject) {
-    blocks.push(`When returning a normal text answer, the envelope's content string must itself contain a valid JSON object.`);
+    blocks.push('When returning a normal text answer, the envelope\'s content string must itself contain a valid JSON object.');
   } else if (options.jsonSchema !== undefined) {
     blocks.push([
       'STRUCTURED OUTPUT CONTRACT:',
@@ -143,15 +143,23 @@ export function withGenerationContract(
 
 function responsePartToText(part: unknown): string {
   if (typeof part === 'string') return part;
-  if (!part || typeof part !== 'object') return '';
+  if (!part || typeof part !== 'object') {
+    throw new UnsupportedInputError('Responses content parts must be strings or typed objects');
+  }
+
   const record = part as Record<string, unknown>;
-  if ((record.type === 'input_text' || record.type === 'output_text' || record.type === 'text') && typeof record.text === 'string') {
+  if (record.type === 'input_text' || record.type === 'output_text' || record.type === 'text') {
+    if (typeof record.text !== 'string') {
+      throw new UnsupportedInputError(`Responses content part '${record.type}' must contain text`);
+    }
     return record.text;
   }
   if (record.type === 'input_image' || record.type === 'image_url') {
     return '\n[Image attached separately]\n';
   }
-  return '';
+
+  const type = typeof record.type === 'string' ? record.type : 'unknown';
+  throw new UnsupportedInputError(`Responses content part type '${type}' is not supported by the ChatGPT web gateway`);
 }
 
 export function responseImages(input: ResponseRequest['input']): ImageInput[] {
@@ -169,7 +177,13 @@ export function responseImages(input: ResponseRequest['input']): ImageInput[] {
 function responseContentToText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map(responsePartToText).join('');
-  return '';
+  if (content && typeof content === 'object') {
+    const record = content as Record<string, unknown>;
+    if (typeof record.type === 'string') return responsePartToText(record);
+    return JSON.stringify(record);
+  }
+  if (content == null) return '';
+  return String(content);
 }
 
 export function serializeResponsesInput(input: ResponseRequest['input']): string {
@@ -177,7 +191,9 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
 
   return input.map((item) => {
     if (typeof item === 'string') return `<USER>\n${item}\n</USER>`;
-    if (!item || typeof item !== 'object') return '';
+    if (!item || typeof item !== 'object') {
+      throw new UnsupportedInputError('Responses input items must be strings or typed objects');
+    }
     const record = item as Record<string, unknown>;
 
     if (record.type === 'function_call') {
@@ -192,10 +208,16 @@ export function serializeResponsesInput(input: ResponseRequest['input']): string
       return `<TOOL tool_call_id=${JSON.stringify(record.call_id ?? '')}>\n${responseContentToText(record.output)}\n</TOOL>`;
     }
 
+    const supportedItemTypes = new Set(['message', 'input_text', 'output_text', 'text', 'input_image', 'image_url']);
+    if (typeof record.type === 'string' && !supportedItemTypes.has(record.type)) {
+      throw new UnsupportedInputError(`Responses input item type '${record.type}' is not supported by the ChatGPT web gateway`);
+    }
+
     const role = typeof record.role === 'string' ? record.role.toUpperCase() : 'USER';
-    const text = responseContentToText(record.content ?? record.text ?? '');
+    const directPart = typeof record.type === 'string' && supportedItemTypes.has(record.type) && record.type !== 'message';
+    const text = responseContentToText(directPart ? record : (record.content ?? record.text ?? ''));
     return `<${role}>\n${text}\n</${role}>`;
-  }).filter(Boolean).join('\n\n');
+  }).join('\n\n');
 }
 
 export function responseTools(request: ResponseRequest): NormalizedFunctionTool[] {
